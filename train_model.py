@@ -1,16 +1,21 @@
 
-import os
+
+from pathlib import Path
+
 import joblib
 import numpy as np
 import pandas as pd
 
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
+
+# 1. Reproducible synthetic dataset
 rng = np.random.default_rng(42)
 n = 1500
 
@@ -21,7 +26,6 @@ roles = [
     "AI Engineer",
     "Software Engineer",
 ]
-
 locations = ["London", "Bristol", "Manchester", "Leeds"]
 education_levels = ["Bachelors", "Masters", "PhD"]
 
@@ -40,14 +44,12 @@ role_salary = {
     "AI Engineer": 50000,
     "Software Engineer": 42000,
 }
-
 location_bonus = {
     "London": 8000,
     "Bristol": 4000,
     "Manchester": 2000,
     "Leeds": 0,
 }
-
 education_bonus = {
     "Bachelors": 0,
     "Masters": 4000,
@@ -62,6 +64,93 @@ df["salary_gbp"] = (
     + df["skills_count"] * 500
     + rng.normal(0, 5000, n)
 ).clip(lower=22000).round(0)
+
+
+# 2. Features and target
+X = df.drop(columns=["salary_gbp"])
+y = df["salary_gbp"]
+
+categorical = ["job_role", "location", "education"]
+
+preprocessor = ColumnTransformer([
+    (
+        "cat",
+        OneHotEncoder(handle_unknown="ignore"),
+        categorical,
+    ),
+], remainder="passthrough")
+
+
+# 3. Separate training and test data
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+
+# 4. Establish a simple baseline
+baseline = DummyRegressor(strategy="mean")
+baseline.fit(X_train, y_train)
+baseline_predictions = baseline.predict(X_test)
+
+
+# 5. Build the Random Forest pipeline
+model = Pipeline([
+    ("preprocessor", preprocessor),
+    (
+        "regressor",
+        RandomForestRegressor(
+            n_estimators=200,
+            random_state=42,
+            min_samples_leaf=3,
+            n_jobs=-1,
+        ),
+    ),
+])
+
+
+# 6. Cross-validation using training data only
+cv_scores = cross_val_score(
+    model,
+    X_train,
+    y_train,
+    cv=5,
+    scoring="neg_mean_absolute_error",
+    n_jobs=-1,
+)
+print(f"5-fold CV MAE: £{-cv_scores.mean():,.2f}")
+print(f"CV MAE standard deviation: £{cv_scores.std():,.2f}")
+
+
+# 7. Fit once on all training data, then test
+model.fit(X_train, y_train)
+predictions = model.predict(X_test)
+
+
+# 8. Report comparable test metrics
+for name, actual, predicted in [
+    ("Baseline", y_test, baseline_predictions),
+    ("Random Forest", y_test, predictions),
+]:
+    mae = mean_absolute_error(actual, predicted)
+    rmse = np.sqrt(mean_squared_error(actual, predicted))
+    r2 = r2_score(actual, predicted)
+
+    print(f"\n{name}")
+    print(f"MAE:  £{mae:,.2f}")
+    print(f"RMSE: £{rmse:,.2f}")
+    print(f"R²:   {r2:.3f}")
+
+
+# 9. Save outputs beside this script
+project_dir = Path(__file__).resolve().parent
+model_dir = project_dir / "models"
+model_dir.mkdir(parents=True, exist_ok=True)
+
+joblib.dump(model, model_dir / "salary_model.joblib")
+df.to_csv(project_dir / "synthetic_salary_data.csv", index=False)
+
+print("\nModel and synthetic dataset saved.")
+print("WARNING: Results use synthetic data, not real UK salary statistics.")
 
 X = df.drop(columns=["salary_gbp"])
 y = df["salary_gbp"]
